@@ -1,22 +1,19 @@
-name: Build Snapclient Android
+name: build-snapclient-android
 
 on:
   push:
-    branches:
-      - main
-  workflow_dispatch:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
 
 jobs:
-  build-android:
+  build:
     runs-on: ubuntu-latest
-
     env:
-      ANDROID_NDK_HOME: ${{ github.workspace }}/ndk
-      ANDROID_ABI: armeabi-v7a
-      ANDROID_PLATFORM: android-24
-      BUILD_CLIENT: ON
-      BUILD_SERVER: OFF
-      BUILD_TESTS: OFF
+      ANDROID_NDK: /home/runner/ndk/ndk
+      ANDROID_SDK_ROOT: /home/runner/Android/Sdk
+      ANDROID_API: 33
+      ANDROID_ABI: arm64-v8a
 
     steps:
     - name: Checkout repository
@@ -25,35 +22,34 @@ jobs:
     - name: Install dependencies
       run: |
         sudo apt update
-        sudo apt install -y cmake ninja-build git wget unzip pkg-config build-essential
+        sudo apt install -y cmake ninja-build clang pkg-config git unzip wget
 
-    - name: Download Android NDK
+    - name: Setup Android SDK
       run: |
-        mkdir -p $ANDROID_NDK_HOME
-        cd $ANDROID_NDK_HOME
-        wget https://dl.google.com/android/repository/android-ndk-r25b-linux.zip
-        unzip android-ndk-r25b-linux.zip
-        mv android-ndk-r25b/* .
-        rm -rf android-ndk-r25b android-ndk-r25b-linux.zip
+        mkdir -p $ANDROID_SDK_ROOT/cmdline-tools
+        wget https://dl.google.com/android/repository/commandlinetools-linux-9477386_latest.zip -O cmdline-tools.zip
+        unzip cmdline-tools.zip -d $ANDROID_SDK_ROOT/cmdline-tools
+        yes | $ANDROID_SDK_ROOT/cmdline-tools/cmdline-tools/bin/sdkmanager --licenses
+        $ANDROID_SDK_ROOT/cmdline-tools/cmdline-tools/bin/sdkmanager "platform-tools" "platforms;android-$ANDROID_API"
 
-    - name: Clone Oboe
+    - name: Clone and build Oboe
       run: |
         git clone https://github.com/google/oboe.git
-        mkdir -p oboe/build
-        cd oboe/build
-        cmake .. -G Ninja
+        mkdir -p oboe/build && cd oboe/build
+        cmake .. -G Ninja \
+          -DCMAKE_C_COMPILER=clang \
+          -DCMAKE_CXX_COMPILER=clang++ \
+          -DCMAKE_BUILD_TYPE=Release
         ninja
+        cd ../../
+        echo "OBEO_DIR=$(pwd)/oboe/build" >> $GITHUB_ENV
 
     - name: Build Snapclient Android
       run: |
-        mkdir -p snapclient/build-android
-        cd snapclient/build-android
+        mkdir -p snapclient/build-android && cd snapclient/build-android
         cmake .. \
-          -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake \
+          -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK/build/cmake/android.toolchain.cmake \
           -DANDROID_ABI=$ANDROID_ABI \
-          -DANDROID_PLATFORM=$ANDROID_PLATFORM \
-          -DBUILD_CLIENT=$BUILD_CLIENT \
-          -DBUILD_SERVER=$BUILD_SERVER \
-          -DBUILD_TESTS=$BUILD_TESTS \
-          -Doboe_DIR=${{ github.workspace }}/oboe/build/oboe
-        cmake --build . --config Release
+          -DANDROID_PLATFORM=android-$ANDROID_API \
+          -DCMAKE_PREFIX_PATH=$OBEO_DIR
+        cmake --build . -- -j$(nproc)
