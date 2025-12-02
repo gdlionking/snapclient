@@ -1,4 +1,4 @@
-name: Build snapclient for Termux (armv7l, OpenSL ES)
+name: Build snapclient for Termux (armv7)
 
 on:
   workflow_dispatch:
@@ -43,24 +43,6 @@ jobs:
         make -j$(nproc)
         make install_sw
 
-    - name: Build Oboe (Android audio library)
-      run: |
-        git clone https://github.com/google/oboe.git --branch 1.7.0
-        cd oboe
-        mkdir build && cd build
-        cmake \
-          -G Ninja \
-          -DCMAKE_SYSTEM_NAME=Android \
-          -DCMAKE_ANDROID_NDK=$HOME/ndk \
-          -DCMAKE_ANDROID_ARCH_ABI=${ANDROID_ABI} \
-          -DCMAKE_ANDROID_API=${API_LEVEL} \
-          -DCMAKE_BUILD_TYPE=Release \
-          ..
-        ninja
-        sudo mkdir -p /usr/local/lib/oboe
-        sudo cp -r ../include /usr/local/lib/oboe/include
-        sudo cp liboboe.a /usr/local/lib/oboe/liboboe.a
-
     - name: Build snapclient
       run: |
         cd snapcast
@@ -78,14 +60,13 @@ jobs:
           -DENABLE_AVAHI=OFF \
           -DENABLE_OPUSEncode=OFF \
           -DENABLE_OPENSLES=ON \
-          -DENABLE_OBOE=ON \
+          -DENABLE_OBOE=OFF \
           -DBUILD_CLIENT=ON \
           -DBUILD_SERVER=OFF \
           -DOPENSSL_ROOT_DIR=$HOME/openssl \
           -DOPENSSL_CRYPTO_LIBRARY=$HOME/openssl/lib/libcrypto.a \
           -DOPENSSL_SSL_LIBRARY=$HOME/openssl/lib/libssl.a \
           -DOPENSSL_INCLUDE_DIR=$HOME/openssl/include \
-          -DOboe_DIR=/usr/local/lib/oboe \
           ..
         ninja client
 
