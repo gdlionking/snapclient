@@ -1,4 +1,4 @@
-name: Build snapclient for Termux (armv7)
+name: Build Snapclient Android
 
 on:
   workflow_dispatch:
@@ -7,71 +7,66 @@ jobs:
   build:
     runs-on: ubuntu-latest
 
-    env:
-      NDK_VERSION: r27d
-      API_LEVEL: 24
-      ANDROID_ABI: armeabi-v7a
-
     steps:
-    - name: Checkout snapcast
+    - name: Checkout snapcast source
       run: |
-        git clone --branch v0.30.0 https://github.com/badaix/snapcast.git
-        cd snapcast
-        git submodule update --init --recursive
+        git clone --branch v0.34.0 https://github.com/badaix/snapcast.git
+        ls -al snapcast
 
     - name: Install dependencies
       run: |
         sudo apt update
-        sudo apt install -y ninja-build cmake pkg-config unzip wget
+        sudo apt install -y cmake ninja-build pkg-config
 
     - name: Download Android NDK
       run: |
-        wget https://dl.google.com/android/repository/android-ndk-${NDK_VERSION}-linux.zip
-        unzip android-ndk-${NDK_VERSION}-linux.zip
-        mv android-ndk-${NDK_VERSION} $HOME/ndk
+        wget https://dl.google.com/android/repository/android-ndk-r26d-linux.zip
+        unzip android-ndk-r26d-linux.zip
+        mv android-ndk-r26d $HOME/ndk
 
-    - name: Build OpenSSL for Android armv7
+    - name: Download Oboe
       run: |
-        wget https://www.openssl.org/source/openssl-1.1.1w.tar.gz
-        tar xf openssl-1.1.1w.tar.gz
-        cd openssl-1.1.1w
+        git clone https://github.com/google/oboe.git
+        mkdir oboe/build
+        cd oboe/build
+        cmake -DANDROID_PLATFORM=24 \
+              -DANDROID_ABI=armeabi-v7a \
+              -DANDROID_NDK=$HOME/ndk \
+              -DCMAKE_TOOLCHAIN_FILE=$HOME/ndk/build/cmake/android.toolchain.cmake \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DCMAKE_INSTALL_PREFIX=$HOME/oboe_install \
+              ..
+        cmake --build . --target install
 
-        export ANDROID_NDK_HOME=$HOME/ndk
-        export PATH=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH
-
-        ./Configure android-arm no-shared --prefix=$HOME/openssl
-        make -j$(nproc)
-        make install_sw
-
-    - name: Build snapclient
+    - name: Configure Snapclient
       run: |
-        cd snapcast
-        mkdir -p build && cd build
-        cmake \
-          -G Ninja \
+        mkdir snapcast/build-android
+        cd snapcast/build-android
+        cmake -G Ninja \
+          -DANDROID_ABI=armeabi-v7a \
+          -DANDROID_PLATFORM=24 \
+          -DANDROID_NDK=$HOME/ndk \
+          -DCMAKE_TOOLCHAIN_FILE=$HOME/ndk/build/cmake/android.toolchain.cmake \
           -DCMAKE_BUILD_TYPE=Release \
-          -DCMAKE_SYSTEM_NAME=Android \
-          -DCMAKE_ANDROID_NDK=$HOME/ndk \
-          -DCMAKE_ANDROID_ARCH_ABI=${ANDROID_ABI} \
-          -DCMAKE_ANDROID_API=${API_LEVEL} \
-          -DENABLE_PULSE=OFF \
-          -DENABLE_ALSA=OFF \
-          -DENABLE_TREMOR=OFF \
-          -DENABLE_AVAHI=OFF \
-          -DENABLE_OPUSEncode=OFF \
-          -DENABLE_OPENSLES=ON \
-          -DENABLE_OBOE=OFF \
-          -DBUILD_CLIENT=ON \
           -DBUILD_SERVER=OFF \
-          -DOPENSSL_ROOT_DIR=$HOME/openssl \
-          -DOPENSSL_CRYPTO_LIBRARY=$HOME/openssl/lib/libcrypto.a \
-          -DOPENSSL_SSL_LIBRARY=$HOME/openssl/lib/libssl.a \
-          -DOPENSSL_INCLUDE_DIR=$HOME/openssl/include \
+          -DBUILD_CLIENT=ON \
+          -DBUILD_TESTS=OFF \
+          -DUSE_PULSEAUDIO=OFF \
+          -DUSE_ALSA=OFF \
+          -DUSE_OSS=OFF \
+          -DUSE_PORTAUDIO=OFF \
+          -DUSE_PIPEWIRE=OFF \
+          -DUSE_OBSOLETE=OFF \
+          -DOBoe_DIR=$HOME/oboe_install/lib/cmake/oboe \
           ..
-        ninja client
 
-    - name: Upload Artifact
-      uses: actions/upload-artifact@v4
+    - name: Build Snapclient
+      run: |
+        cd snapcast/build-android
+        ninja
+
+    - name: Upload artifact
+      uses: actions/upload-artifact@v3
       with:
-        name: snapclient-armv7-termux
-        path: snapcast/build/client/*
+        name: snapclient-android
+        path: snapcast/build-android/client/snapclient
