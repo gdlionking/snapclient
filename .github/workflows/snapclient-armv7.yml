@@ -1,68 +1,105 @@
-name: Build Termux Snapclient ARMv7
+name: Build Termux snapclient (armv7)
 
 on:
   workflow_dispatch:
 
 jobs:
-  build:
+  build-armv7:
     runs-on: ubuntu-latest
+    env:
+      NDK_VER: r26d
+      ANDROID_API: 24
+      ANDROID_ABI: armeabi-v7a
+      OPENSSL_VER: 1.1.1w
 
     steps:
-      - name: Checkout snapclient source
-        uses: actions/checkout@v4
-        with:
-          repository: snapcast/snapcast
-          ref: v0.34.0
+    - name: Checkout snapcast (v0.34.0)
+      run: |
+        git clone --depth 1 --branch v0.34.0 https://github.com/badaix/snapcast.git snapcast
+        ls -la snapcast
 
-      - name: Install dependencies
-        run: |
-          sudo apt update
-          sudo apt install -y ninja-build python3-pip git wget unzip
-          pip3 install meson
+    - name: Install host deps
+      run: |
+        sudo apt update
+        sudo apt install -y cmake ninja-build git wget unzip build-essential python3-pip pkg-config
+        pip3 install meson
 
-      - name: Download Android NDK
-        run: |
-          wget https://dl.google.com/android/repository/android-ndk-r26d-linux.zip
-          unzip android-ndk-r26d-linux.zip
-          mv android-ndk-r26d $HOME/ndk
+    - name: Download Android NDK (r26d)
+      run: |
+        wget https://dl.google.com/android/repository/android-ndk-${NDK_VER}-linux.zip -O ndk.zip
+        unzip ndk.zip
+        mv android-ndk-${NDK_VER} $HOME/ndk
+        echo "NDK installed to $HOME/ndk"
 
-      - name: Download Oboe
-        run: |
-          git clone https://github.com/google/oboe.git
-          cd oboe
-          git checkout 1.7.0
-          mkdir build && cd build
-          cmake -DCMAKE_TOOLCHAIN_FILE=$HOME/ndk/build/cmake/android.toolchain.cmake \
-                -DANDROID_PLATFORM=21 \
-                -DANDROID_ABI=armeabi-v7a \
-                -DCMAKE_BUILD_TYPE=Release \
-                -DOBE_BUILD_TESTS=OFF \
-                ..
-          cmake --build .
-          sudo cmake --install . --prefix /usr/local
+    - name: Cross-build OpenSSL (static) for armeabi-v7a
+      run: |
+        set -e
+        cd $RUNNER_TEMP
+        wget https://www.openssl.org/source/openssl-${OPENSSL_VER}.tar.gz
+        tar xf openssl-${OPENSSL_VER}.tar.gz
+        cd openssl-${OPENSSL_VER}
+        export ANDROID_NDK_HOME=$HOME/ndk
+        export PATH=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH
+        # Configure for armeabi-v7a (android-24)
+        ./Configure android-arm -D__ANDROID_API__=${ANDROID_API} no-shared --prefix=$HOME/openssl
+        make -j$(nproc)
+        make install_sw
 
-      - name: Build snapclient
-        run: |
-          mkdir build-android
-          cd build-android
-          cmake \
-            -DCMAKE_TOOLCHAIN_FILE=$HOME/ndk/build/cmake/android.toolchain.cmake \
-            -DANDROID_PLATFORM=21 \
-            -DANDROID_ABI=armeabi-v7a \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DBUILD_CLIENT=ON \
-            -DBUILD_SERVER=OFF \
-            -DWITH_OGG=ON \
-            -DWITH_OPUS=ON \
-            -DWITH_FLAC=ON \
-            -DWITH_ALSA=OFF \
-            -DWITH_PULSEAUDIO=OFF \
-            -DWITH_OBSOLETE_LIBSNDFILE=OFF \
-            ..
-          cmake --build . --target snapclient -j$(nproc)
+    - name: Clone Oboe and build with Android toolchain
+      run: |
+        set -e
+        git clone https://github.com/google/oboe.git oboe
+        cd oboe
+        # choose a stable tag if desired, else builds latest
+        # git checkout tags/1.7.0 -b buildtag || true
+        mkdir -p build && cd build
+        cmake .. \
+          -G Ninja \
+          -DCMAKE_TOOLCHAIN_FILE=$HOME/ndk/build/cmake/android.toolchain.cmake \
+          -DANDROID_ABI=${ANDROID_ABI} \
+          -DANDROID_PLATFORM=android-${ANDROID_API} \
+          -DCMAKE_BUILD_TYPE=Release \
+          -DOBE_BUILD_TESTS=OFF
+        ninja -j$(nproc)
+        # keep oboe build dir at $GITHUB_WORKSPACE/oboe/build
+        ls -la
 
-      - name: Upload ARMv7 Snapclient
-        uses: actions/upload-artifact@v4
-        with:
-          name: snapclient-armv7
-          path: build-android/client/snapclient
+    - name: Configure and build snapclient (Android armv7)
+      working-directory: snapcast
+      run: |
+        set -e
+        mkdir -p build-android
+        cd build-android
+        cmake -G Ninja \
+          -DCMAKE_TOOLCHAIN_FILE=$HOME/ndk/build/cmake/android.toolchain.cmake \
+          -DANDROID_ABI=${ANDROID_ABI} \
+          -DANDROID_PLATFORM=android-${ANDROID_API} \
+          -DCMAKE_BUILD_TYPE=Release \
+          -DBUILD_CLIENT=ON \
+          -DBUILD_SERVER=OFF \
+          -DBUILD_TESTS=OFF \
+          -DOPENSSL_ROOT_DIR=$HOME/openssl \
+          -DOPENSSL_INCLUDE_DIR=$HOME/openssl/include \
+          -DOPENSSL_CRYPTO_LIBRARY=$HOME/openssl/lib/libcrypto.a \
+          -DOPENSSL_SSL_LIBRARY=$HOME/openssl/lib/libssl.a \
+          -DCMAKE_PREFIX_PATH="$GITHUB_WORKSPACE/oboe/build;$GITHUB_WORKSPACE/oboe/build/oboe" \
+          -Doboe_DIR="$GITHUB_WORKSPACE/oboe/build/oboe" \
+          -DENABLE_OBOE=ON \
+          -DENABLE_OPENSLES=ON \
+          -DENABLE_PULSE=OFF \
+          -DENABLE_ALSA=OFF \
+          -DENABLE_AVAHI=OFF \
+          ..
+        ninja client -j$(nproc)
+
+    - name: Show artifact file
+      run: |
+        echo "Built files:"
+        ls -la snapcast/build-android/client || true
+        file snapcast/build-android/client/snapclient || true
+
+    - name: Upload snapclient artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: snapclient-armv7-termux
+        path: snapcast/build-android/client/snapclient
