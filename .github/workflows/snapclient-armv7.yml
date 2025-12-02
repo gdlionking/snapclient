@@ -1,51 +1,152 @@
-name: Build Snapclient for Termux ARMv7
+name: Cross-compile snapclient for armv7l Android
 
 on:
+  push:
+    branches:
+      - main
   workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout source
-        uses: actions/checkout@v3
+      - name: Checkout code
+        uses: actions/checkout@v4
         with:
-          repository: badaix/snapcast
-          ref: v0.34.0
+          submodules: recursive  # 如果有 submodule，如 tremor
 
-      - name: Setup Android NDK
-        run: |
-          wget https://dl.google.com/android/repository/android-ndk-r25b-linux.zip
-          unzip android-ndk-r25b-linux.zip
-          mv android-ndk-r25b $HOME/android-ndk
+      - name: Set up Git
+        run: git checkout v0.34.0
 
-      - name: Configure CMake (disable Oboe, enable libao)
+      - name: Install system dependencies
         run: |
-          mkdir build && cd build
-          cmake .. \
-            -DCMAKE_SYSTEM_NAME=Android \
-            -DCMAKE_ANDROID_NDK=$HOME/android-ndk \
-            -DCMAKE_ANDROID_ARCH_ABI=armeabi-v7a \
-            -DCMAKE_ANDROID_API=21 \
-            -DBUILD_CLIENT=ON \
-            -DBUILD_SERVER=OFF \
-            -DUSE_LIBAO=ON \
-            -DUSE_OBSOE=OFF
+          sudo apt-get update
+          sudo apt-get install -y wget unzip cmake ninja-build g++ git python3 make pkg-config
 
-      - name: Build
+      - name: Download Android NDK
         run: |
+          wget https://dl.google.com/android/repository/android-ndk-r26d-linux.zip
+          unzip android-ndk-r26d-linux.zip
+          export NDK=$PWD/android-ndk-r26d
+
+      - name: Create standalone toolchain for armv7l
+        run: |
+          $NDK/build/tools/make_standalone_toolchain.py --arch arm --api 21 --install-dir /tmp/toolchain-armv7l
+          export PATH=/tmp/toolchain-armv7l/bin:$PATH
+          export CC=arm-linux-androideabi-clang
+          export CXX=arm-linux-androideabi-clang++
+          export AR=arm-linux-androideabi-ar
+          export AS=arm-linux-androideabi-as
+          export LD=arm-linux-androideabi-ld
+          export RANLIB=arm-linux-androideabi-ranlib
+          export STRIP=arm-linux-androideabi-strip
+
+      - name: Build dependencies for Android armv7l
+        run: |
+          # Build Boost (使用 boost-for-android 脚本或手动)
+          git clone https://github.com/moritz-wundke/Boost-for-Android.git
+          cd Boost-for-Android
+          ./build-android.sh --boost-version=1.84.0 --arch=armeabi-v7a --ndk-dir=$NDK
+          export BOOST_ROOT=$PWD/build/out/armeabi-v7a
+          cd ..
+
+          # Build Oboe
+          git clone https://github.com/google/oboe.git
+          cd oboe
+          mkdir build
           cd build
+          cmake .. -DCMAKE_TOOLCHAIN_FILE=$NDK/build/cmake/android.toolchain.cmake -DANDROID_ABI=armeabi-v7a -DANDROID_PLATFORM=android-21 -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/tmp/deps
           make -j$(nproc)
+          make install
+          cd ../..
 
-      - name: Package
-        run: |
+          # Build FLAC
+          git clone https://github.com/xiph/flac.git
+          cd flac
+          ./autogen.sh
+          ./configure --host=arm-linux-androideabi --prefix=/tmp/deps CC=$CC CXX=$CXX --disable-oggtest --enable-static --disable-shared
+          make -j$(nproc)
+          make install
+          cd ..
+
+          # Build Opus
+          git clone https://github.com/xiph/opus.git
+          cd opus
+          ./autogen.sh
+          ./configure --host=arm-linux-androideabi --prefix=/tmp/deps CC=$CC CXX=$CXX --enable-static --disable-shared
+          make -j$(nproc)
+          make install
+          cd ..
+
+          # Build Ogg
+          git clone https://github.com/xiph/ogg.git
+          cd ogg
+          ./autogen.sh
+          ./configure --host=arm-linux-androideabi --prefix=/tmp/deps CC=$CC CXX=$CXX --enable-static --disable-shared
+          make -j$(nproc)
+          make install
+          cd ..
+
+          # Build Tremor (Vorbis for integer)
+          git clone https://github.com/xiph/tremor.git
+          cd tremor
+          ./autogen.sh
+          ./configure --host=arm-linux-androideabi --prefix=/tmp/deps CC=$CC CXX=$CXX --enable-static --disable-shared
+          make -j$(nproc)
+          make install
+          cd ..
+
+          # Build Soxr
+          git clone https://github.com/chirlu/soxr.git
+          cd soxr
+          mkdir build
           cd build
-          tar czf snapclient-armv7l.tar.gz snapclient
-          mkdir -p $GITHUB_WORKSPACE/artifacts
-          mv snapclient-armv7l.tar.gz $GITHUB_WORKSPACE/artifacts/
+          cmake .. -DCMAKE_TOOLCHAIN_FILE=$NDK/build/cmake/android.toolchain.cmake -DANDROID_ABI=armeabi-v7a -DANDROID_PLATFORM=android-21 -DCMAKE_INSTALL_PREFIX=/tmp/deps -DBUILD_SHARED_LIBS=OFF
+          make -j$(nproc)
+          make install
+          cd ../..
+
+          # Build OpenSSL
+          git clone https://github.com/openssl/openssl.git
+          cd openssl
+          git checkout OpenSSL_1_1_1-stable
+          export ANDROID_NDK_HOME=$NDK
+          perl Configure android-arm -static --prefix=/tmp/deps --openssldir=/tmp/deps
+          make -j$(nproc)
+          make install
+          cd ..
+
+      - name: Build snapclient
+        run: |
+          mkdir build
+          cd build
+          cmake .. -DCMAKE_TOOLCHAIN_FILE=$NDK/build/cmake/android.toolchain.cmake \
+            -DANDROID_ABI=armeabi-v7a \
+            -DANDROID_PLATFORM=android-21 \
+            -DANDROID_NATIVE_API_LEVEL=21 \
+            -DCMAKE_SYSTEM_NAME=Android \
+            -DCMAKE_FIND_ROOT_PATH=/tmp/deps \
+            -DBOOST_ROOT=$BOOST_ROOT \
+            -DBUILD_SERVER=OFF \
+            -DBUILD_CLIENT=ON \
+            -DBUILD_TESTS=OFF \
+            -DBUILD_STATIC_LIBS=ON \
+            -DBUILD_WITH_PULSE=OFF \
+            -DBUILD_WITH_ALSA=OFF \
+            -DBUILD_WITH_AVAHI=OFF \
+            -DBUILD_WITH_JACK=OFF \
+            -DBUILD_WITH_FLAC=ON \
+            -DBUILD_WITH_OPUS=ON \
+            -DBUILD_WITH_VORBIS=OFF \
+            -DBUILD_WITH_TREMOR=ON \
+            -DBUILD_WITH_SSL=ON \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX=/tmp/snapclient-install
+          make -j$(nproc)
+          make install
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: snapclient-armv7l
-          path: artifacts/snapclient-armv7l.tar.gz
+          name: snapclient-armv7l-android
+          path: /tmp/snapclient-install/bin/snapclient
