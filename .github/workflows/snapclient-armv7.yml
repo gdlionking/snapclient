@@ -8,7 +8,7 @@ jobs:
     runs-on: ubuntu-latest
 
     env:
-      NDK_VERSION: 26.1.10909125
+      NDK_VERSION: r27d
       API_LEVEL: 24
       TARGET_TRIPLE: armv7a-linux-androideabi
 
