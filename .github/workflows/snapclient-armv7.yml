@@ -1,60 +1,110 @@
-name: Build Playerctl for Armbian
+name: Build snapclient (Termux armv7)
 
 on:
   workflow_dispatch:
 
 jobs:
-  build:
+  build-armv7:
     runs-on: ubuntu-latest
+    env:
+      NDK_VERSION: r26d
+      ANDROID_API: 24
+      ANDROID_ABI: armeabi-v7a
+      OPENSSL_VERSION: 1.1.1w
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+    - name: Checkout snapcast (v0.34.0)
+      run: |
+        git clone --depth 1 --branch v0.34.0 https://github.com/badaix/snapcast.git snapcast
+        ls -la snapcast
 
-      - name: Set NDK Path
-        run: |
-          export TOOLCHAIN=$HOME/ndk/toolchains/llvm/prebuilt/linux-x86_64
-          echo "TOOLCHAIN=$TOOLCHAIN" >> $GITHUB_ENV
+    - name: Install build deps
+      run: |
+        sudo apt update
+        sudo apt install -y cmake ninja-build pkg-config unzip wget build-essential git perl
 
-      - name: Install Dependencies
-        run: |
-          sudo apt update
-          sudo apt install -y git autoconf automake libtool pkg-config ninja-build meson
+    - name: Download Android NDK
+      run: |
+        wget https://dl.google.com/android/repository/android-ndk-${NDK_VERSION}-linux.zip -O ndk.zip
+        unzip ndk.zip
+        mv android-ndk-${NDK_VERSION} $HOME/ndk
+        echo "NDK="$HOME/ndk > ndk_info.txt
+        ls -la $HOME/ndk
 
-      - name: Download Android NDK r26d
-        run: |
-          wget https://dl.google.com/android/repository/android-ndk-r26d-linux.zip
-          unzip android-ndk-r26d-linux.zip -d $HOME
-          mv $HOME/android-ndk-r26d $HOME/ndk
+    - name: Build OpenSSL for Android arm (static)
+      working-directory: ${{ runner.temp }}
+      run: |
+        set -e
+        wget https://www.openssl.org/source/openssl-${{ env.OPENSSL_VERSION }}.tar.gz
+        tar xf openssl-${{ env.OPENSSL_VERSION }}.tar.gz
+        cd openssl-${{ env.OPENSSL_VERSION }}
+        export ANDROID_NDK_HOME=$HOME/ndk
+        export PATH=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH
+        # Configure for android-arm (armeabi-v7a). no-shared -> static libs
+        ./Configure android-arm no-shared --prefix=$HOME/openssl
+        make -j$(nproc)
+        make install_sw
+        ls -la $HOME/openssl
 
-      - name: Clone playerctl
-        run: |
-          git clone https://github.com/altdesktop/playerctl.git
-          cd playerctl
-          git submodule update --init --recursive
+    - name: Apply Android-friendly CMake patches to snapcast
+      working-directory: snapcast
+      run: |
+        set -e
+        # Create a small CMake include that forces thread flags and disables oboe when ANDROID
+        cat > cmake/AndroidOverride.cmake <<'EOF'
+        if(ANDROID)
+          message(STATUS "Applying Android overrides")
+          # ensure pthreads works via -pthread
+          set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -pthread" CACHE STRING "" FORCE)
+          set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -pthread" CACHE STRING "" FORCE)
+          # Prevent trying to find oboe/aaudio on linux runner
+          set(ENABLE_OBOE OFF CACHE BOOL "disable oboe for android build" FORCE)
+          set(ENABLE_ANDROID_AAUDIO OFF CACHE BOOL "disable aaudio" FORCE)
+          set(ENABLE_ANDROID_OBoe OFF CACHE BOOL "disable android oboe" FORCE)
+          # prefer OpenSL ES backend
+          set(ENABLE_OPENSLES ON CACHE BOOL "enable opensles" FORCE)
+          # disable pulseaudio/alsa/avahi in cross build
+          set(ENABLE_PULSE OFF CACHE BOOL "disable pulse" FORCE)
+          set(ENABLE_ALSA OFF CACHE BOOL "disable alsa" FORCE)
+          set(ENABLE_AVAHI OFF CACHE BOOL "disable avahi" FORCE)
+        endif()
+        EOF
 
-      - name: Build playerctl (armv7)
-        run: |
-          cd playerctl
-          export CC="$TOOLCHAIN/bin/armv7a-linux-androideabi21-clang"
-          export CXX="$TOOLCHAIN/bin/armv7a-linux-androideabi21-clang++"
-          export AR="$TOOLCHAIN/bin/llvm-ar"
-          export LD="$TOOLCHAIN/bin/ld.lld"
+        # Ensure top-level CMake includes our override before project() (if possible),
+        # otherwise include at configure invocation via -C option below.
+        ls -la cmake || true
 
-          meson setup builddir \
-            --cross-file ../cross-file.txt \
-            --default-library=static
+    - name: Configure and build snapclient (Android armeabi-v7a)
+      working-directory: snapcast
+      run: |
+        set -e
+        mkdir -p build-android && cd build-android
+        cmake -G Ninja \
+          -DCMAKE_BUILD_TYPE=Release \
+          -DCMAKE_TOOLCHAIN_FILE=$HOME/ndk/build/cmake/android.toolchain.cmake \
+          -DANDROID_ABI=${{ env.ANDROID_ABI }} \
+          -DANDROID_PLATFORM=android-${{ env.ANDROID_API }} \
+          -DOPENSSL_ROOT_DIR=$HOME/openssl \
+          -DOPENSSL_INCLUDE_DIR=$HOME/openssl/include \
+          -DOPENSSL_CRYPTO_LIBRARY=$HOME/openssl/lib/libcrypto.a \
+          -DOPENSSL_SSL_LIBRARY=$HOME/openssl/lib/libssl.a \
+          -DBUILD_CLIENT=ON \
+          -DBUILD_SERVER=OFF \
+          -DBUILD_TESTS=OFF \
+          -DCPACK_GENERATOR=ZIP \
+          -C ../cmake/AndroidOverride.cmake \
+          ..
+        ninja client || ( echo "ninja failed, ls build dir:" && ls -la . && exit 1 )
 
-          ninja -C builddir
-          mkdir -p ../output
-          cp builddir/playerctl ../output/playerctl-armv7
+    - name: Show built files
+      working-directory: snapcast/build-android
+      run: |
+        echo "Artifacts in build-android:"
+        ls -la client || true
+        file client/snapclient || true
 
-      - name: Create Release
-        run: |
-          tag="build-$(date +'%Y%m%d-%H%M%S')"
-          gh release create "$tag" -t "Playerctl Build $tag" -n "自动构建的 Playerctl"
-
-      - name: Upload Build to Release
-        run: |
-          tag=$(gh release list --limit 1 --json tagName --jq '.[0].tagName')
-          gh release upload "$tag" output/playerctl-armv7
+    - name: Upload snapclient artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: snapclient-armv7-termux
+        path: snapcast/build-android/client/snapclient
