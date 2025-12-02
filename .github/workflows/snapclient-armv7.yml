@@ -28,8 +28,3 @@ jobs:
       run: |
         wget https://dl.google.com/android/repository/android-ndk-${NDK_VERSION}-linux.zip
         unzip android-ndk-${NDK_VERSION}-linux.zip
-        mv android-ndk-${NDK_VERSION} $HOME/ndk
-
-    - name: Setup Android Toolchain
-      run: |
-        TOOLCHAIN=$HOME/ndk/toolchains
