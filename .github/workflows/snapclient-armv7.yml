@@ -10,7 +10,6 @@ jobs:
     env:
       NDK_VERSION: r27d
       API_LEVEL: 24
-      TARGET_TRIPLE: arm-linux-androideabi
       ANDROID_ABI: armeabi-v7a
 
     steps:
@@ -44,7 +43,25 @@ jobs:
         make -j$(nproc)
         make install_sw
 
-    - name: Configure and Build snapclient
+    - name: Build Oboe (Android audio library)
+      run: |
+        git clone https://github.com/google/oboe.git --branch 1.7.0
+        cd oboe
+        mkdir build && cd build
+        cmake \
+          -G Ninja \
+          -DCMAKE_SYSTEM_NAME=Android \
+          -DCMAKE_ANDROID_NDK=$HOME/ndk \
+          -DCMAKE_ANDROID_ARCH_ABI=${ANDROID_ABI} \
+          -DCMAKE_ANDROID_API=${API_LEVEL} \
+          -DCMAKE_BUILD_TYPE=Release \
+          ..
+        ninja
+        sudo mkdir -p /usr/local/lib/oboe
+        sudo cp -r ../include /usr/local/lib/oboe/include
+        sudo cp liboboe.a /usr/local/lib/oboe/liboboe.a
+
+    - name: Build snapclient
       run: |
         cd snapcast
         mkdir -p build && cd build
@@ -55,19 +72,20 @@ jobs:
           -DCMAKE_ANDROID_NDK=$HOME/ndk \
           -DCMAKE_ANDROID_ARCH_ABI=${ANDROID_ABI} \
           -DCMAKE_ANDROID_API=${API_LEVEL} \
+          -DENABLE_PULSE=OFF \
+          -DENABLE_ALSA=OFF \
+          -DENABLE_TREMOR=OFF \
+          -DENABLE_AVAHI=OFF \
+          -DENABLE_OPUSEncode=OFF \
+          -DENABLE_OPENSLES=ON \
+          -DENABLE_OBOE=ON \
+          -DBUILD_CLIENT=ON \
+          -DBUILD_SERVER=OFF \
           -DOPENSSL_ROOT_DIR=$HOME/openssl \
           -DOPENSSL_CRYPTO_LIBRARY=$HOME/openssl/lib/libcrypto.a \
           -DOPENSSL_SSL_LIBRARY=$HOME/openssl/lib/libssl.a \
           -DOPENSSL_INCLUDE_DIR=$HOME/openssl/include \
-          -DENABLE_PULSE=OFF \
-          -DENABLE_ALSA=OFF \
-          -DENABLE_AVAHI=OFF \
-          -DENABLE_TREMOR=OFF \
-          -DENABLE_FLAC=ON \
-          -DENABLE_OPUS=ON \
-          -DENABLE_OPENSLES=ON \
-          -DBUILD_CLIENT=ON \
-          -DBUILD_SERVER=OFF \
+          -DOboe_DIR=/usr/local/lib/oboe \
           ..
         ninja client
 
