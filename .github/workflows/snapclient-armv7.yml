@@ -1,4 +1,4 @@
-name: Build snapclient for Termux with OpenSL ES
+name: Build snapclient for Termux (armv7l, OpenSL ES)
 
 on:
   workflow_dispatch:
@@ -13,8 +13,16 @@ jobs:
       TARGET_TRIPLE: armv7a-linux-androideabi
 
     steps:
-    - name: Checkout
-      uses: actions/checkout@v4
+    - name: Checkout snapcast
+      run: |
+        git clone --branch v0.30.0 https://github.com/badaix/snapcast.git
+        cd snapcast
+        git submodule update --init --recursive
+
+    - name: Install dependencies
+      run: |
+        sudo apt update
+        sudo apt install -y ninja-build cmake pkg-config unzip wget
 
     - name: Download Android NDK
       run: |
@@ -22,56 +30,6 @@ jobs:
         unzip android-ndk-${NDK_VERSION}-linux.zip
         mv android-ndk-${NDK_VERSION} $HOME/ndk
 
-    - name: Install build deps
+    - name: Setup Android Toolchain
       run: |
-        sudo apt update
-        sudo apt install -y ninja-build cmake pkg-config
-
-    - name: Prepare Toolchain
-      run: |
-        TOOLCHAIN=$HOME/ndk/toolchains/llvm/prebuilt/linux-x86_64
-        echo "TOOLCHAIN=$TOOLCHAIN" >> $GITHUB_ENV
-        echo "AR=$TOOLCHAIN/bin/llvm-ar" >> $GITHUB_ENV
-        echo "AS=$TOOLCHAIN/bin/llvm-as" >> $GITHUB_ENV
-        echo "CC=$TOOLCHAIN/bin/${TARGET_TRIPLE}${API_LEVEL}-clang" >> $GITHUB_ENV
-        echo "CXX=$TOOLCHAIN/bin/${TARGET_TRIPLE}${API_LEVEL}-clang++" >> $GITHUB_ENV
-        echo "LD=$TOOLCHAIN/bin/ld" >> $GITHUB_ENV
-        echo "RANLIB=$TOOLCHAIN/bin/llvm-ranlib" >> $GITHUB_ENV
-        echo "STRIP=$TOOLCHAIN/bin/llvm-strip" >> $GITHUB_ENV
-
-    - name: Clone snapcast
-      run: |
-        git clone --branch v0.30.0 https://github.com/badaix/snapcast.git
-        cd snapcast && git submodule update --init --recursive
-
-    - name: Configure & Build snapclient
-      run: |
-        cd snapcast/client
-        mkdir build && cd build
-        cmake \
-          -G Ninja \
-          -DCMAKE_BUILD_TYPE=Release \
-          -DCMAKE_SYSTEM_NAME=Android \
-          -DCMAKE_ANDROID_NDK=$HOME/ndk \
-          -DCMAKE_ANDROID_ARCH_ABI=armeabi-v7a \
-          -DCMAKE_ANDROID_API=$API_LEVEL \
-          -DCMAKE_C_COMPILER=$CC \
-          -DCMAKE_CXX_COMPILER=$CXX \
-          -DOPENSSL_USE_STATIC_LIBS=ON \
-          -DENABLE_PULSE=OFF \
-          -DENABLE_ASIO=ON \
-          -DENABLE_ALSA=OFF \
-          -DENABLE_AVAHI=OFF \
-          -DENABLE_TREMOR=OFF \
-          -DENABLE_FLAC=ON \
-          -DENABLE_OPUS=ON \
-          -DENABLE_OPENSLES=ON \
-          ..
-
-        ninja
-
-    - name: Upload Artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: snapclient-armv7l-termux-opensles
-        path: snapcast/client/build/snapclient
+        TOOLCHAIN=$HOME/ndk/toolchains
