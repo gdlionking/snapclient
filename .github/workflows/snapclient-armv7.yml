@@ -1,4 +1,4 @@
-name: build-snapclient-armv7
+name: Build Playerctl for Armbian
 
 on:
   workflow_dispatch:
@@ -8,39 +8,53 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - name: Checkout Snapclient v0.34.0
-      uses: actions/checkout@v4
-      with:
-        repository: badaix/snapcast
-        ref: v0.34.0
+      - name: Checkout
+        uses: actions/checkout@v4
 
-    - name: Download Android NDK
-      run: |
-        wget https://dl.google.com/android/repository/android-ndk-r26d-linux.zip -O ndk.zip
-        unzip ndk.zip
-        mv android-ndk-r26d ndk
+      - name: Set NDK Path
+        run: |
+          export TOOLCHAIN=$HOME/ndk/toolchains/llvm/prebuilt/linux-x86_64
+          echo "TOOLCHAIN=$TOOLCHAIN" >> $GITHUB_ENV
 
-    - name: Configure & Build (Android armv7, OpenSL ES)
-      run: |
-        mkdir build && cd build
-        cmake .. \
-          -DCMAKE_TOOLCHAIN_FILE=$GITHUB_WORKSPACE/ndk/build/cmake/android.toolchain.cmake \
-          -DANDROID_ABI=armeabi-v7a \
-          -DANDROID_PLATFORM=android-21 \
-          -DBUILD_CLIENT=ON \
-          -DBUILD_SERVER=OFF \
-          -DBUILD_TESTS=OFF \
-          -DBUILD_WI_CLIENT=OFF \
-          -DUSE_PULSE=OFF \
-          -DUSE_OBoe=OFF \
-          -DUSE_OSS=OFF \
-          -DUSE_ALSA=OFF \
-          -DUSE_PORTAUDIO=OFF \
-          -DUSE_PIPEWIRE=OFF
-        cmake --build . --config Release -j$(nproc)
+      - name: Install Dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y git autoconf automake libtool pkg-config ninja-build meson
 
-    - name: Upload Artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: snapclient-armv7
-        path: build/client/snapclient
+      - name: Download Android NDK r26d
+        run: |
+          wget https://dl.google.com/android/repository/android-ndk-r26d-linux.zip
+          unzip android-ndk-r26d-linux.zip -d $HOME
+          mv $HOME/android-ndk-r26d $HOME/ndk
+
+      - name: Clone playerctl
+        run: |
+          git clone https://github.com/altdesktop/playerctl.git
+          cd playerctl
+          git submodule update --init --recursive
+
+      - name: Build playerctl (armv7)
+        run: |
+          cd playerctl
+          export CC="$TOOLCHAIN/bin/armv7a-linux-androideabi21-clang"
+          export CXX="$TOOLCHAIN/bin/armv7a-linux-androideabi21-clang++"
+          export AR="$TOOLCHAIN/bin/llvm-ar"
+          export LD="$TOOLCHAIN/bin/ld.lld"
+
+          meson setup builddir \
+            --cross-file ../cross-file.txt \
+            --default-library=static
+
+          ninja -C builddir
+          mkdir -p ../output
+          cp builddir/playerctl ../output/playerctl-armv7
+
+      - name: Create Release
+        run: |
+          tag="build-$(date +'%Y%m%d-%H%M%S')"
+          gh release create "$tag" -t "Playerctl Build $tag" -n "自动构建的 Playerctl"
+
+      - name: Upload Build to Release
+        run: |
+          tag=$(gh release list --limit 1 --json tagName --jq '.[0].tagName')
+          gh release upload "$tag" output/playerctl-armv7
