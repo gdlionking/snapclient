@@ -19,7 +19,7 @@ jobs:
           unzip android-ndk-r25b-linux.zip
           mv android-ndk-r25b $HOME/android-ndk
 
-      - name: Configure CMake
+      - name: Configure CMake (disable Oboe, enable libao)
         run: |
           mkdir build && cd build
           cmake .. \
@@ -29,7 +29,8 @@ jobs:
             -DCMAKE_ANDROID_API=21 \
             -DBUILD_CLIENT=ON \
             -DBUILD_SERVER=OFF \
-            -DUSE_LIBAO=ON
+            -DUSE_LIBAO=ON \
+            -DUSE_OBSOE=OFF
 
       - name: Build
         run: |
@@ -44,7 +45,7 @@ jobs:
           mv snapclient-armv7l.tar.gz $GITHUB_WORKSPACE/artifacts/
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v3
         with:
           name: snapclient-armv7l
           path: artifacts/snapclient-armv7l.tar.gz
