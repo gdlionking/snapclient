@@ -11,9 +11,8 @@ jobs:
       ANDROID_API: 24
       ANDROID_ABI: armeabi-v7a
       OPENSSL_VER: 1.1.1w
-      # 定义 OBOE 安装目录，供后续步骤使用
-      OBOE_INSTALL_DIR: ${{ runner.temp }}/oboe_install
-
+      # OBOE_INSTALL_DIR 定义被移除，将在步骤中作为 shell 变量或硬编码路径使用
+      
     steps:
     - name: Checkout snapcast (v0.34.0)
       uses: actions/checkout@v4
@@ -21,6 +20,8 @@ jobs:
         repository: badaix/snapcast
         ref: v0.34.0
         path: snapcast
+
+---
 
     - name: Install host deps
       run: |
@@ -38,20 +39,24 @@ jobs:
     - name: Cross-build OpenSSL (static) for armeabi-v7a
       run: |
         set -e
+        # OpenSSL 安装到 $HOME/openssl
         cd $RUNNER_TEMP
         wget https://www.openssl.org/source/openssl-${{ env.OPENSSL_VER }}.tar.gz
         tar xf openssl-${{ env.OPENSSL_VER }}.tar.gz
         cd openssl-${{ env.OPENSSL_VER }}
         export ANDROID_NDK_HOME=$HOME/ndk
         export PATH=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH
-        # Configure for armeabi-v7a (android-24), static library (no-shared)
         ./Configure android-arm -D__ANDROID_API__=${{ env.ANDROID_API }} no-shared --prefix=$HOME/openssl
         make -j$(nproc)
         make install_sw
 
+---
+
     - name: Cross-build and Install Oboe
       run: |
         set -e
+        # ⚠️ 将 OBOE 安装目录硬编码到 $HOME/oboe-install
+        export OBOE_INSTALL_DIR=$HOME/oboe-install 
         git clone https://github.com/google/oboe.git oboe
         cd oboe
         mkdir -p build && cd build
@@ -62,18 +67,21 @@ jobs:
           -DANDROID_PLATFORM=android-${{ env.ANDROID_API }} \
           -DCMAKE_BUILD_TYPE=Release \
           -DOBE_BUILD_TESTS=OFF \
-          -DCMAKE_INSTALL_PREFIX=${{ env.OBOE_INSTALL_DIR }} # <-- 设置安装路径
+          -DCMAKE_INSTALL_PREFIX=${OBOE_INSTALL_DIR} # <-- 使用 shell 变量
         
         ninja -j$(nproc)
-        ninja install # <-- 安装 Oboe 库和 CMake 配置文件
+        ninja install 
 
-        # 验证 Oboe 配置文件是否存在
-        ls -la ${{ env.OBOE_INSTALL_DIR }}/lib/cmake/oboe/oboeConfig.cmake
+        ls -la ${OBOE_INSTALL_DIR}/lib/cmake/oboe/oboeConfig.cmake
+
+---
 
     - name: Configure and build snapclient (Android armv7)
       working-directory: snapcast
       run: |
         set -e
+        # ⚠️ 在此重新定义 OBOE 安装目录
+        export OBOE_INSTALL_DIR=$HOME/oboe-install 
         mkdir -p build-android
         cd build-android
         cmake -G Ninja \
@@ -84,13 +92,11 @@ jobs:
           -DBUILD_CLIENT=ON \
           -DBUILD_SERVER=OFF \
           -DBUILD_TESTS=OFF \
-          # OpenSSL 配置
           -DOPENSSL_ROOT_DIR=$HOME/openssl \
           -DOPENSSL_INCLUDE_DIR=$HOME/openssl/include \
           -DOPENSSL_CRYPTO_LIBRARY=$HOME/openssl/lib/libcrypto.a \
           -DOPENSSL_SSL_LIBRARY=$HOME/openssl/lib/libssl.a \
-          # Oboe 配置：通过 CMAKE_PREFIX_PATH 指向 Oboe 的安装目录
-          -DCMAKE_PREFIX_PATH="${{ env.OBOE_INSTALL_DIR }}" \
+          -DCMAKE_PREFIX_PATH="${OBOE_INSTALL_DIR}" \
           -DENABLE_OBOE=ON \
           -DENABLE_OPENSLES=ON \
           -DENABLE_PULSE=OFF \
@@ -98,6 +104,8 @@ jobs:
           -DENABLE_AVAHI=OFF \
           ..
         ninja client -j$(nproc)
+
+---
 
     - name: Show artifact file
       run: |
