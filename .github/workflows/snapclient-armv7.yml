@@ -1,110 +1,68 @@
-name: Build snapclient (Termux armv7)
+name: Build Termux Snapclient ARMv7
 
 on:
   workflow_dispatch:
 
 jobs:
-  build-armv7:
+  build:
     runs-on: ubuntu-latest
-    env:
-      NDK_VERSION: r26d
-      ANDROID_API: 24
-      ANDROID_ABI: armeabi-v7a
-      OPENSSL_VERSION: 1.1.1w
 
     steps:
-    - name: Checkout snapcast (v0.34.0)
-      run: |
-        git clone --depth 1 --branch v0.34.0 https://github.com/badaix/snapcast.git snapcast
-        ls -la snapcast
+      - name: Checkout snapclient source
+        uses: actions/checkout@v4
+        with:
+          repository: snapcast/snapcast
+          ref: v0.34.0
 
-    - name: Install build deps
-      run: |
-        sudo apt update
-        sudo apt install -y cmake ninja-build pkg-config unzip wget build-essential git perl
+      - name: Install dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y ninja-build python3-pip git wget unzip
+          pip3 install meson
 
-    - name: Download Android NDK
-      run: |
-        wget https://dl.google.com/android/repository/android-ndk-${NDK_VERSION}-linux.zip -O ndk.zip
-        unzip ndk.zip
-        mv android-ndk-${NDK_VERSION} $HOME/ndk
-        echo "NDK="$HOME/ndk > ndk_info.txt
-        ls -la $HOME/ndk
+      - name: Download Android NDK
+        run: |
+          wget https://dl.google.com/android/repository/android-ndk-r26d-linux.zip
+          unzip android-ndk-r26d-linux.zip
+          mv android-ndk-r26d $HOME/ndk
 
-    - name: Build OpenSSL for Android arm (static)
-      working-directory: ${{ runner.temp }}
-      run: |
-        set -e
-        wget https://www.openssl.org/source/openssl-${{ env.OPENSSL_VERSION }}.tar.gz
-        tar xf openssl-${{ env.OPENSSL_VERSION }}.tar.gz
-        cd openssl-${{ env.OPENSSL_VERSION }}
-        export ANDROID_NDK_HOME=$HOME/ndk
-        export PATH=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH
-        # Configure for android-arm (armeabi-v7a). no-shared -> static libs
-        ./Configure android-arm no-shared --prefix=$HOME/openssl
-        make -j$(nproc)
-        make install_sw
-        ls -la $HOME/openssl
+      - name: Download Oboe
+        run: |
+          git clone https://github.com/google/oboe.git
+          cd oboe
+          git checkout 1.7.0
+          mkdir build && cd build
+          cmake -DCMAKE_TOOLCHAIN_FILE=$HOME/ndk/build/cmake/android.toolchain.cmake \
+                -DANDROID_PLATFORM=21 \
+                -DANDROID_ABI=armeabi-v7a \
+                -DCMAKE_BUILD_TYPE=Release \
+                -DOBE_BUILD_TESTS=OFF \
+                ..
+          cmake --build .
+          sudo cmake --install . --prefix /usr/local
 
-    - name: Apply Android-friendly CMake patches to snapcast
-      working-directory: snapcast
-      run: |
-        set -e
-        # Create a small CMake include that forces thread flags and disables oboe when ANDROID
-        cat > cmake/AndroidOverride.cmake <<'EOF'
-        if(ANDROID)
-          message(STATUS "Applying Android overrides")
-          # ensure pthreads works via -pthread
-          set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -pthread" CACHE STRING "" FORCE)
-          set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -pthread" CACHE STRING "" FORCE)
-          # Prevent trying to find oboe/aaudio on linux runner
-          set(ENABLE_OBOE OFF CACHE BOOL "disable oboe for android build" FORCE)
-          set(ENABLE_ANDROID_AAUDIO OFF CACHE BOOL "disable aaudio" FORCE)
-          set(ENABLE_ANDROID_OBoe OFF CACHE BOOL "disable android oboe" FORCE)
-          # prefer OpenSL ES backend
-          set(ENABLE_OPENSLES ON CACHE BOOL "enable opensles" FORCE)
-          # disable pulseaudio/alsa/avahi in cross build
-          set(ENABLE_PULSE OFF CACHE BOOL "disable pulse" FORCE)
-          set(ENABLE_ALSA OFF CACHE BOOL "disable alsa" FORCE)
-          set(ENABLE_AVAHI OFF CACHE BOOL "disable avahi" FORCE)
-        endif()
-        EOF
+      - name: Build snapclient
+        run: |
+          mkdir build-android
+          cd build-android
+          cmake \
+            -DCMAKE_TOOLCHAIN_FILE=$HOME/ndk/build/cmake/android.toolchain.cmake \
+            -DANDROID_PLATFORM=21 \
+            -DANDROID_ABI=armeabi-v7a \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_CLIENT=ON \
+            -DBUILD_SERVER=OFF \
+            -DWITH_OGG=ON \
+            -DWITH_OPUS=ON \
+            -DWITH_FLAC=ON \
+            -DWITH_ALSA=OFF \
+            -DWITH_PULSEAUDIO=OFF \
+            -DWITH_OBSOLETE_LIBSNDFILE=OFF \
+            ..
+          cmake --build . --target snapclient -j$(nproc)
 
-        # Ensure top-level CMake includes our override before project() (if possible),
-        # otherwise include at configure invocation via -C option below.
-        ls -la cmake || true
-
-    - name: Configure and build snapclient (Android armeabi-v7a)
-      working-directory: snapcast
-      run: |
-        set -e
-        mkdir -p build-android && cd build-android
-        cmake -G Ninja \
-          -DCMAKE_BUILD_TYPE=Release \
-          -DCMAKE_TOOLCHAIN_FILE=$HOME/ndk/build/cmake/android.toolchain.cmake \
-          -DANDROID_ABI=${{ env.ANDROID_ABI }} \
-          -DANDROID_PLATFORM=android-${{ env.ANDROID_API }} \
-          -DOPENSSL_ROOT_DIR=$HOME/openssl \
-          -DOPENSSL_INCLUDE_DIR=$HOME/openssl/include \
-          -DOPENSSL_CRYPTO_LIBRARY=$HOME/openssl/lib/libcrypto.a \
-          -DOPENSSL_SSL_LIBRARY=$HOME/openssl/lib/libssl.a \
-          -DBUILD_CLIENT=ON \
-          -DBUILD_SERVER=OFF \
-          -DBUILD_TESTS=OFF \
-          -DCPACK_GENERATOR=ZIP \
-          -C ../cmake/AndroidOverride.cmake \
-          ..
-        ninja client || ( echo "ninja failed, ls build dir:" && ls -la . && exit 1 )
-
-    - name: Show built files
-      working-directory: snapcast/build-android
-      run: |
-        echo "Artifacts in build-android:"
-        ls -la client || true
-        file client/snapclient || true
-
-    - name: Upload snapclient artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: snapclient-armv7-termux
-        path: snapcast/build-android/client/snapclient
+      - name: Upload ARMv7 Snapclient
+        uses: actions/upload-artifact@v4
+        with:
+          name: snapclient-armv7
+          path: build-android/client/snapclient
