@@ -1,4 +1,4 @@
-name: Build Snapclient Android
+name: build-snapclient-android
 
 on:
   workflow_dispatch:
@@ -8,64 +8,50 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - name: Checkout snapcast source
-      run: |
-        git clone --branch v0.34.0 https://github.com/badaix/snapcast.git
+      - name: Checkout snapcast
+        run: |
+          git clone --branch v0.34.0 https://github.com/badaix/snapcast.git
+          cd snapcast
+          git submodule update --init --recursive
 
-    - name: Install dependencies
-      run: |
-        sudo apt update
-        sudo apt install -y cmake ninja-build pkg-config
+      - name: Download NDK
+        run: |
+          mkdir -p $HOME/ndk
+          cd $HOME/ndk
+          wget https://dl.google.com/android/repository/android-ndk-r26d-linux.zip
+          unzip android-ndk-r26d-linux.zip
+          mv android-ndk-r26d ndk
 
-    - name: Download Android NDK
-      run: |
-        wget https://dl.google.com/android/repository/android-ndk-r26d-linux.zip
-        unzip android-ndk-r26d-linux.zip
-        mv android-ndk-r26d $HOME/ndk
+      - name: Clone Oboe
+        run: |
+          git clone https://github.com/google/oboe.git
+          cd oboe
+          mkdir build
+          cd build
+          cmake .. -DCMAKE_TOOLCHAIN_FILE=$HOME/ndk/ndk/build/cmake/android.toolchain.cmake \
+            -DANDROID_ABI=armeabi-v7a \
+            -DANDROID_PLATFORM=android-24
+          make -j$(nproc)
 
-    - name: Download Oboe
-      run: |
-        git clone https://github.com/google/oboe.git
-        mkdir oboe/build
-        cd oboe/build
-        cmake -DANDROID_PLATFORM=24 \
-              -DANDROID_ABI=armeabi-v7a \
-              -DANDROID_NDK=$HOME/ndk \
-              -DCMAKE_TOOLCHAIN_FILE=$HOME/ndk/build/cmake/android.toolchain.cmake \
-              -DCMAKE_BUILD_TYPE=Release \
-              -DCMAKE_INSTALL_PREFIX=$HOME/oboe_install \
-              ..
-        cmake --build . --target install
+      - name: Build snapclient
+        run: |
+          cd snapcast
+          mkdir build-android
+          cd build-android
 
-    - name: Configure Snapclient
-      run: |
-        mkdir snapcast/build-android
-        cd snapcast/build-android
-        cmake -G Ninja \
-          -DANDROID_ABI=armeabi-v7a \
-          -DANDROID_PLATFORM=24 \
-          -DANDROID_NDK=$HOME/ndk \
-          -DCMAKE_TOOLCHAIN_FILE=$HOME/ndk/build/cmake/android.toolchain.cmake \
-          -DCMAKE_BUILD_TYPE=Release \
-          -DBUILD_SERVER=OFF \
-          -DBUILD_CLIENT=ON \
-          -DBUILD_TESTS=OFF \
-          -DUSE_PULSEAUDIO=OFF \
-          -DUSE_ALSA=OFF \
-          -DUSE_OSS=OFF \
-          -DUSE_PORTAUDIO=OFF \
-          -DUSE_PIPEWIRE=OFF \
-          -DUSE_OBSOLETE=OFF \
-          -DOBoe_DIR=$HOME/oboe_install/lib/cmake/oboe \
-          ..
+          cmake .. \
+            -DCMAKE_TOOLCHAIN_FILE=$HOME/ndk/ndk/build/cmake/android.toolchain.cmake \
+            -DANDROID_ABI=armeabi-v7a \
+            -DANDROID_PLATFORM=android-24 \
+            -DBUILD_CLIENT=ON \
+            -DBUILD_SERVER=OFF \
+            -DBUILD_TESTS=OFF \
+            -DCMAKE_PREFIX_PATH=$GITHUB_WORKSPACE/oboe/build
 
-    - name: Build Snapclient
-      run: |
-        cd snapcast/build-android
-        ninja
+          make -j$(nproc)
 
-    - name: Upload artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: snapclient-android
-        path: snapcast/build-android/client/snapclient
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: snapclient-android
+          path: snapcast/build-android/client/snapclient
