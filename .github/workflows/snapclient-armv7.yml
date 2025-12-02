@@ -13,10 +13,8 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
-          submodules: recursive  # 如果有 submodule，如 tremor
-
-      - name: Set up Git
-        run: git checkout v0.34.0
+          ref: v0.34.0
+          submodules: recursive  # If there are submodules
 
       - name: Install system dependencies
         run: |
@@ -43,7 +41,7 @@ jobs:
 
       - name: Build dependencies for Android armv7l
         run: |
-          # Build Boost (使用 boost-for-android 脚本或手动)
+          # Build Boost (using boost-for-android script or manual)
           git clone https://github.com/moritz-wundke/Boost-for-Android.git
           cd Boost-for-Android
           ./build-android.sh --boost-version=1.84.0 --arch=armeabi-v7a --ndk-dir=$NDK
