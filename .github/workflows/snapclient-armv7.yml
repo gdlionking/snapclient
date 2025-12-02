@@ -10,7 +10,8 @@ jobs:
     env:
       NDK_VERSION: r27d
       API_LEVEL: 24
-      TARGET_TRIPLE: armv7a-linux-androideabi
+      TARGET_TRIPLE: arm-linux-androideabi
+      ANDROID_ABI: armeabi-v7a
 
     steps:
     - name: Checkout snapcast
@@ -30,19 +31,20 @@ jobs:
         unzip android-ndk-${NDK_VERSION}-linux.zip
         mv android-ndk-${NDK_VERSION} $HOME/ndk
 
-    - name: Setup Android Toolchain
+    - name: Build OpenSSL for Android armv7
       run: |
-        TOOLCHAIN=$HOME/ndk/toolchains/llvm/prebuilt/linux-x86_64
-        echo "TOOLCHAIN=$TOOLCHAIN" >> $GITHUB_ENV
-        echo "AR=$TOOLCHAIN/bin/llvm-ar" >> $GITHUB_ENV
-        echo "AS=$TOOLCHAIN/bin/llvm-as" >> $GITHUB_ENV
-        echo "CC=$TOOLCHAIN/bin/${TARGET_TRIPLE}${API_LEVEL}-clang" >> $GITHUB_ENV
-        echo "CXX=$TOOLCHAIN/bin/${TARGET_TRIPLE}${API_LEVEL}-clang++" >> $GITHUB_ENV
-        echo "LD=$TOOLCHAIN/bin/ld" >> $GITHUB_ENV
-        echo "RANLIB=$TOOLCHAIN/bin/llvm-ranlib" >> $GITHUB_ENV
-        echo "STRIP=$TOOLCHAIN/bin/llvm-strip" >> $GITHUB_ENV
+        wget https://www.openssl.org/source/openssl-1.1.1w.tar.gz
+        tar xf openssl-1.1.1w.tar.gz
+        cd openssl-1.1.1w
 
-    - name: Build snapclient
+        export ANDROID_NDK_HOME=$HOME/ndk
+        export PATH=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH
+
+        ./Configure android-arm no-shared --prefix=$HOME/openssl
+        make -j$(nproc)
+        make install_sw
+
+    - name: Configure and Build snapclient
       run: |
         cd snapcast
         mkdir -p build && cd build
@@ -51,13 +53,13 @@ jobs:
           -DCMAKE_BUILD_TYPE=Release \
           -DCMAKE_SYSTEM_NAME=Android \
           -DCMAKE_ANDROID_NDK=$HOME/ndk \
-          -DCMAKE_ANDROID_ARCH_ABI=armeabi-v7a \
-          -DCMAKE_ANDROID_API=$API_LEVEL \
-          -DCMAKE_C_COMPILER=$CC \
-          -DCMAKE_CXX_COMPILER=$CXX \
-          -DOPENSSL_USE_STATIC_LIBS=ON \
+          -DCMAKE_ANDROID_ARCH_ABI=${ANDROID_ABI} \
+          -DCMAKE_ANDROID_API=${API_LEVEL} \
+          -DOPENSSL_ROOT_DIR=$HOME/openssl \
+          -DOPENSSL_CRYPTO_LIBRARY=$HOME/openssl/lib/libcrypto.a \
+          -DOPENSSL_SSL_LIBRARY=$HOME/openssl/lib/libssl.a \
+          -DOPENSSL_INCLUDE_DIR=$HOME/openssl/include \
           -DENABLE_PULSE=OFF \
-          -DENABLE_ASIO=ON \
           -DENABLE_ALSA=OFF \
           -DENABLE_AVAHI=OFF \
           -DENABLE_TREMOR=OFF \
@@ -69,13 +71,8 @@ jobs:
           ..
         ninja client
 
-    - name: List build directory
-      run: |
-        echo "Listing build/client directory:"
-        ls -l snapcast/build/client/
-
     - name: Upload Artifact
       uses: actions/upload-artifact@v4
       with:
-        name: snapclient-armv7l-termux-opensles
+        name: snapclient-armv7-termux
         path: snapcast/build/client/*
