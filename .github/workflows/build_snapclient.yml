@@ -10,46 +10,45 @@ on:
 jobs:
   build_android_armv7:
     name: Build Snapclient v0.34.0 for Android ARMv7
-    # 使用标准的 Ubuntu 运行器作为宿主机器 (x86_64)
     runs-on: ubuntu-latest
 
     steps:
-      - name: ⬇️ Checkout Repository
-        # 假设您的 Snapclient 源码已经在这个仓库中，或者我们将直接下载 v0.34.0 压缩包
+      - name: ⬇️ Checkout Snapcast v0.34.0 Source
+        # 获取 V0.34.0 标签的源码
         uses: actions/checkout@v4
         with:
           repository: badaix/snapcast
-          ref: v0.34.0 # 指定 V0.34.0 标签
+          ref: v0.34.0
           path: snapcast-0.34.0
 
       - name: 🛠️ Install Build Dependencies (on Host)
-        # 安装编译所需的 autotools 和依赖库的宿主工具
+        # 安装编译所需的 autotools 和 pkg-config
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential automake autoconf libtool pkg-config
 
-      - name: ⚙️ Setup Android NDK and Toolchain
-        # 使用官方 action 设置 Android NDK (这是交叉编译的关键)
-        uses: android-actions/setup-ndk@v2
+      - name: ⚙️ Setup Android SDK and NDK (FIXED: Using reliable action)
+        # 使用 android-sdk/setup-android 解决上一轮 Action 仓库找不到的问题
+        uses: android-sdk/setup-android@v2
         with:
-          # 我们针对的是 Termux，通常建议使用较高的 API 级别以获得更好的兼容性
-          # Termux 通常运行在较新的 Android 版本上
-          ndk-version: r26c # 稳定版本
-          api: 21 # Android 5.0 (Lollipop) 是支持 armv7l 的最低常用版本
+          # NDK r26c 是您指定的稳定版本
+          ndk-version: r26c
+          # 使用 API 21 (Android 5.0) 兼容 armv7l
+          android-version: 21
 
-      - name: 🔍 Define Environment Variables for ARMv7
+      - name: 🔍 Define Cross-Compilation Environment Variables
         # 设置交叉编译所需的所有环境变量
         run: |
-          # NDK 路径
-          export NDK_ROOT="${{ steps.setup-ndk.outputs.ndk-path }}"
-          # 编译目标架构
-          export TARGET_ARCH=armv7a-linux-androideabi
-          # NDK 编译工具链路径
-          export TOOLCHAIN_BIN="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          # NDK_ROOT 路径由 android-sdk/setup-android 自动设置在 ANDROID_NDK_HOME
+          export NDK_ROOT="${ANDROID_NDK_HOME}" 
+          API=21 
+          TARGET_ARCH=armv7a-linux-androideabi
+          TOOLCHAIN_BIN="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin"
           
           # 设置 C/C++ 编译器和链接器 (使用 NDK 提供的 clang)
-          export CC="$TOOLCHAIN_BIN/$TARGET_ARCH$API-clang"
-          export CXX="$TOOLCHAIN_BIN/$TARGET_ARCH$API-clang++"
+          # 注意：NDK r26c 使用 $TARGET_ARCH-clang$API 的命名格式
+          export CC="$TOOLCHAIN_BIN/$TARGET_ARCH-clang$API" 
+          export CXX="$TOOLCHAIN_BIN/$TARGET_ARCH-clang++$API"
           export AR="$TOOLCHAIN_BIN/llvm-ar"
           export LD="$TOOLCHAIN_BIN/ld"
 
@@ -60,41 +59,28 @@ jobs:
           echo "LD=$LD" >> $GITHUB_ENV
           echo "NDK_ROOT=$NDK_ROOT" >> $GITHUB_ENV
           echo "TARGET_ARCH=$TARGET_ARCH" >> $GITHUB_ENV
-
-      - name: ⬇️ Download and Setup Dependencies (PulseAudio/libsamplerate)
-        # 对于 Android NDK 交叉编译，PulseAudio 库不能直接使用，需要 Termux 特有的实现。
-        # 但 Snapclient 可以编译成不带 PulseAudio 或 ALSA 依赖的版本，
-        # 然后在 Termux 中使用 PulseAudio 的 wrapper 或构建 Termux 特有的依赖。
-        # 为了简化，我们先禁用 PulseAudio/ALSA，确保核心编译通过。
-        # 用户可以在 Termux 中使用 netcat/socat 转发音频流或在 Termux 环境中进行本地编译。
-
-        # 🎯 更改策略：我们无法在 NDK 中交叉编译 PulseAudio 依赖。
-        # 最兼容的方式是编译一个不带 PulseAudio 的核心版本，并使用 Termux 的 PulseAudio Wrapper。
-        # 或者使用 Snapcast 提供的 Android JNI/JavaAudioTrack 编译，但那复杂得多。
-        # 我们编译一个最简核心版本：
-
+          
+      - name: ⬇️ Compile libsamplerate Dependency
+        # Snapclient 依赖 libsamplerate，我们需要先交叉编译它
         run: |
-          # 我们只需要 libsamplerate 依赖
           cd snapcast-0.34.0/client
           wget -O libsamplerate-0.1.9.tar.gz https://github.com/libsndfile/libsamplerate/releases/download/0.1.9/libsamplerate-0.1.9.tar.gz
           tar -xzf libsamplerate-0.1.9.tar.gz
           cd libsamplerate-0.1.9
+          # 使用 --host 进行交叉编译配置
           ./configure --host=$TARGET_ARCH --prefix=$RUNNER_TEMP/samplerate --disable-shared
           make -j$(nproc)
           make install
 
       - name: 🔨 Configure and Build Snapclient
-        # 实际的交叉编译步骤
+        # 实际的 Snapclient 交叉编译步骤
         run: |
           cd snapcast-0.34.0/client
           
-          # 1. 运行 autogen.sh (在 client 目录下可能需要)
+          # 运行 autoconf
           autoreconf -i
           
-          # 2. 配置编译
-          # --host: 交叉编译的目标平台
-          # --with-pulse=no 和 --with-alsa=no 禁用官方依赖，确保它能编译
-          # --with-libsamplerate 链接我们刚刚编译的静态库
+          # 配置编译，禁用所有官方音频后端，并链接 libsamplerate
           ./configure \
               --host=$TARGET_ARCH \
               --with-pulse=no \
@@ -103,6 +89,18 @@ jobs:
               --with-libsamplerate=yes \
               --disable-tests \
               CPPFLAGS="-I$RUNNER_TEMP/samplerate/include" \
+              LDFLAGS="-L$RUNNER_TEMP/samplerate/lib"
+              
+          # 编译
+          make -j$(nproc)
+
+      - name: 📤 Archive and Upload Artifact
+        # 将编译好的 snapclient 可执行文件上传为 Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: snapclient-armv7l-v0.34.0
+          path: snapcast-0.34.0/client/snapclient
+          retention-days: 7 # 保留 7 天
               LDFLAGS="-L$RUNNER_TEMP/samplerate/lib"
               
           # 3. 编译
