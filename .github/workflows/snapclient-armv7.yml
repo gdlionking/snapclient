@@ -1,6 +1,7 @@
 name: Build Termux snapclient (armv7)
 
 on:
+  # 允许手动触发工作流
   workflow_dispatch:
 
 jobs:
@@ -11,51 +12,48 @@ jobs:
       ANDROID_API: 24
       ANDROID_ABI: armeabi-v7a
       OPENSSL_VER: 1.1.1w
-      # OBOE_INSTALL_DIR 定义被移除，将在步骤中作为 shell 变量或硬编码路径使用
-      
+      # OBOE_INSTALL_DIR 变量将在步骤内部定义和使用 ($HOME/oboe-install)
+
     steps:
-    - name: Checkout snapcast (v0.34.0)
+    - name: 1. Checkout snapcast (v0.34.0)
       uses: actions/checkout@v4
       with:
         repository: badaix/snapcast
         ref: v0.34.0
         path: snapcast
 
----
-
-    - name: Install host deps
+    - name: 2. Install host dependencies
       run: |
         sudo apt update
         sudo apt install -y cmake ninja-build git wget unzip build-essential python3-pip pkg-config
         pip3 install meson
 
-    - name: Download Android NDK (${{ env.NDK_VER }})
+    - name: 3. Download Android NDK (${{ env.NDK_VER }})
       run: |
         wget https://dl.google.com/android/repository/android-ndk-${{ env.NDK_VER }}-linux.zip -O ndk.zip
         unzip ndk.zip
         mv android-ndk-${{ env.NDK_VER }} $HOME/ndk
         echo "NDK installed to $HOME/ndk"
 
-    - name: Cross-build OpenSSL (static) for armeabi-v7a
+    - name: 4. Cross-build and Install OpenSSL (static)
       run: |
         set -e
-        # OpenSSL 安装到 $HOME/openssl
         cd $RUNNER_TEMP
         wget https://www.openssl.org/source/openssl-${{ env.OPENSSL_VER }}.tar.gz
         tar xf openssl-${{ env.OPENSSL_VER }}.tar.gz
         cd openssl-${{ env.OPENSSL_VER }}
         export ANDROID_NDK_HOME=$HOME/ndk
+        # 将 NDK 工具链添加到 PATH
         export PATH=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH
         ./Configure android-arm -D__ANDROID_API__=${{ env.ANDROID_API }} no-shared --prefix=$HOME/openssl
         make -j$(nproc)
         make install_sw
+        echo "OpenSSL installed to $HOME/openssl"
 
----
-
-    - name: Cross-build and Install Oboe
+    - name: 5. Cross-build and Install Oboe
       run: |
         set -e
-        # ⚠️ 将 OBOE 安装目录硬编码到 $HOME/oboe-install
+        # 统一 Oboe 安装路径
         export OBOE_INSTALL_DIR=$HOME/oboe-install 
         git clone https://github.com/google/oboe.git oboe
         cd oboe
@@ -67,23 +65,24 @@ jobs:
           -DANDROID_PLATFORM=android-${{ env.ANDROID_API }} \
           -DCMAKE_BUILD_TYPE=Release \
           -DOBE_BUILD_TESTS=OFF \
-          -DCMAKE_INSTALL_PREFIX=${OBOE_INSTALL_DIR} # <-- 使用 shell 变量
+          -DCMAKE_INSTALL_PREFIX=${OBOE_INSTALL_DIR}
         
         ninja -j$(nproc)
         ninja install 
 
+        echo "Oboe installed to ${OBOE_INSTALL_DIR}"
+        # 验证 Oboe 配置文件是否存在
         ls -la ${OBOE_INSTALL_DIR}/lib/cmake/oboe/oboeConfig.cmake
 
----
-
-    - name: Configure and build snapclient (Android armv7)
+    - name: 6. Configure and build snapclient (Android armv7)
       working-directory: snapcast
       run: |
         set -e
-        # ⚠️ 在此重新定义 OBOE 安装目录
         export OBOE_INSTALL_DIR=$HOME/oboe-install 
         mkdir -p build-android
         cd build-android
+        echo "Starting CMake configuration..."
+        
         cmake -G Ninja \
           -DCMAKE_TOOLCHAIN_FILE=$HOME/ndk/build/cmake/android.toolchain.cmake \
           -DANDROID_ABI=${{ env.ANDROID_ABI }} \
@@ -96,24 +95,39 @@ jobs:
           -DOPENSSL_INCLUDE_DIR=$HOME/openssl/include \
           -DOPENSSL_CRYPTO_LIBRARY=$HOME/openssl/lib/libcrypto.a \
           -DOPENSSL_SSL_LIBRARY=$HOME/openssl/lib/libssl.a \
+          # Oboe 配置：使用 CMAKE_PREFIX_PATH 查找
           -DCMAKE_PREFIX_PATH="${OBOE_INSTALL_DIR}" \
+          # 显式设置 Oboe 查找目录，作为备用方案
+          -Doboe_DIR="${OBOE_INSTALL_DIR}/lib/cmake/oboe" \ 
           -DENABLE_OBOE=ON \
           -DENABLE_OPENSLES=ON \
           -DENABLE_PULSE=OFF \
           -DENABLE_ALSA=OFF \
           -DENABLE_AVAHI=OFF \
           ..
-        ninja client -j$(nproc)
+        
+        echo "Starting Ninja build for snapclient..."
+        # 明确编译目标名称：snapclient
+        ninja snapclient -j$(nproc)
+        echo "Build finished."
 
----
-
-    - name: Show artifact file
+    - name: 7. Show artifact file and check existence (Debug)
+      id: check_artifact
       run: |
-        echo "Built files:"
+        ARTIFACT_PATH=snapcast/build-android/client/snapclient
+        echo "Built files list:"
         ls -la snapcast/build-android/client || true
-        file snapcast/build-android/client/snapclient || true
+        
+        # 检查文件是否存在，如果不存在则强制工作流失败
+        if [ ! -f "$ARTIFACT_PATH" ]; then
+          echo "::error file=$ARTIFACT_PATH::Snapclient binary not found at $ARTIFACT_PATH. The build failed silently (less than 10 seconds is the key sign)."
+          exit 1
+        fi
+        
+        echo "Snapclient binary successfully created."
+        file "$ARTIFACT_PATH"
 
-    - name: Upload snapclient artifact
+    - name: 8. Upload snapclient artifact
       uses: actions/upload-artifact@v4
       with:
         name: snapclient-armv7-termux
