@@ -12,7 +12,8 @@ jobs:
       ANDROID_API: 24
       ANDROID_ABI: armeabi-v7a
       OPENSSL_VER: 1.1.1w
-      # OBOE_INSTALL_DIR 变量将在步骤内部定义和使用 ($HOME/oboe-install)
+      # 定义 OBOE 库的安装根目录
+      OBOE_INSTALL_DIR: ${{ runner.temp }}/oboe-install
 
     steps:
     - name: 1. Checkout snapcast (v0.34.0)
@@ -43,7 +44,6 @@ jobs:
         tar xf openssl-${{ env.OPENSSL_VER }}.tar.gz
         cd openssl-${{ env.OPENSSL_VER }}
         export ANDROID_NDK_HOME=$HOME/ndk
-        # 将 NDK 工具链添加到 PATH
         export PATH=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH
         ./Configure android-arm -D__ANDROID_API__=${{ env.ANDROID_API }} no-shared --prefix=$HOME/openssl
         make -j$(nproc)
@@ -53,8 +53,8 @@ jobs:
     - name: 5. Cross-build and Install Oboe
       run: |
         set -e
-        # 统一 Oboe 安装路径
-        export OBOE_INSTALL_DIR=$HOME/oboe-install 
+        # OBOE_INSTALL_DIR 位于 /home/runner/work/snapclient/snapclient/oboe_install (或类似路径)
+        export OBOE_INSTALL_DIR=${{ env.OBOE_INSTALL_DIR }} 
         git clone https://github.com/google/oboe.git oboe
         cd oboe
         mkdir -p build && cd build
@@ -71,17 +71,19 @@ jobs:
         ninja install 
 
         echo "Oboe installed to ${OBOE_INSTALL_DIR}"
-        # 验证 Oboe 配置文件是否存在
-        ls -la ${OBOE_INSTALL_DIR}/lib/cmake/oboe/oboeConfig.cmake
+        # ⚠️ 移除 OboeConfig.cmake 的检查，避免工作流因 Oboe 缺乏配置包而失败
 
     - name: 6. Configure and build snapclient (Android armv7)
       working-directory: snapcast
       run: |
         set -e
-        export OBOE_INSTALL_DIR=$HOME/oboe-install 
+        export OBOE_INSTALL_DIR=${{ env.OBOE_INSTALL_DIR }}
         mkdir -p build-android
         cd build-android
         echo "Starting CMake configuration..."
+        
+        # OBOE 静态库路径: /home/runner/oboe-install/lib/armeabi-v7a/liboboe.a
+        OBOE_LIB_PATH="${OBOE_INSTALL_DIR}/lib/${{ env.ANDROID_ABI }}/liboboe.a"
         
         cmake -G Ninja \
           -DCMAKE_TOOLCHAIN_FILE=$HOME/ndk/build/cmake/android.toolchain.cmake \
@@ -91,15 +93,15 @@ jobs:
           -DBUILD_CLIENT=ON \
           -DBUILD_SERVER=OFF \
           -DBUILD_TESTS=OFF \
+          # OpenSSL 配置
           -DOPENSSL_ROOT_DIR=$HOME/openssl \
           -DOPENSSL_INCLUDE_DIR=$HOME/openssl/include \
           -DOPENSSL_CRYPTO_LIBRARY=$HOME/openssl/lib/libcrypto.a \
           -DOPENSSL_SSL_LIBRARY=$HOME/openssl/lib/libssl.a \
-          # Oboe 配置：使用 CMAKE_PREFIX_PATH 查找
-          -DCMAKE_PREFIX_PATH="${OBOE_INSTALL_DIR}" \
-          # 显式设置 Oboe 查找目录，作为备用方案
-          -Doboe_DIR="${OBOE_INSTALL_DIR}/lib/cmake/oboe" \ 
+          # Oboe 配置：直接指定 Snapclient 内部变量
           -DENABLE_OBOE=ON \
+          -DOBOE_INCLUDE_DIR="${OBOE_INSTALL_DIR}/include" \
+          -DOBOE_LIBRARY="${OBOE_LIB_PATH}" \
           -DENABLE_OPENSLES=ON \
           -DENABLE_PULSE=OFF \
           -DENABLE_ALSA=OFF \
@@ -118,9 +120,8 @@ jobs:
         echo "Built files list:"
         ls -la snapcast/build-android/client || true
         
-        # 检查文件是否存在，如果不存在则强制工作流失败
         if [ ! -f "$ARTIFACT_PATH" ]; then
-          echo "::error file=$ARTIFACT_PATH::Snapclient binary not found at $ARTIFACT_PATH. The build failed silently (less than 10 seconds is the key sign)."
+          echo "::error file=$ARTIFACT_PATH::Snapclient binary not found at $ARTIFACT_PATH. The build failed silently."
           exit 1
         fi
         
