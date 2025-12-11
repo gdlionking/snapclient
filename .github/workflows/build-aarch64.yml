@@ -1,0 +1,62 @@
+name: Build snapclient v0.34.0 for aarch64 Debian10
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+
+    steps:
+    - name: Checkout snapclient v0.34.0
+      uses: actions/checkout@v3
+      with:
+        ref: v0.34.0
+
+    - name: Install cross compile toolchain
+      run: |
+        sudo apt update
+        sudo apt install -y \
+          gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
+          cmake pkg-config git \
+          libpulse-dev libsamplerate0-dev libsoxr-dev
+
+    - name: Download Boost 1.74 (prebuilt)
+      run: |
+        wget https://boostorg.jfrog.io/artifactory/main/release/1.74.0/source/boost_1_74_0.tar.bz2
+        tar xjf boost_1_74_0.tar.bz2
+        cd boost_1_74_0
+        ./bootstrap.sh --with-libraries=system,filesystem,thread,regex,program_options,date_time,chrono
+        ./b2 -j4 \
+            cxxflags="-fPIC -O2" linkflags="-static" \
+            variant=release link=static threading=multi runtime-link=static \
+            --prefix="$PWD/stage" install
+        echo "BOOST_ROOT=$PWD/stage" >> $GITHUB_ENV
+
+    - name: Configure snapclient (cross compile)
+      run: |
+        mkdir build
+        cd build
+        cmake .. \
+          -DCMAKE_SYSTEM_NAME=Linux \
+          -DCMAKE_SYSTEM_PROCESSOR=aarch64 \
+          -DCMAKE_C_COMPILER=aarch64-linux-gnu-gcc \
+          -DCMAKE_CXX_COMPILER=aarch64-linux-gnu-g++ \
+          -DBoost_NO_SYSTEM_PATHS=ON \
+          -DBoost_INCLUDE_DIR="$BOOST_ROOT/include" \
+          -DBoost_LIBRARY_DIR="$BOOST_ROOT/lib" \
+          -DBoost_USE_STATIC_LIBS=ON \
+          -DWITH_PULSE=ON \
+          -DWITH_ALSA=OFF \
+          -DWITH_AVAHI=OFF
+
+    - name: Build snapclient
+      run: |
+        cd build
+        make -j4
+
+    - name: Upload artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: snapclient-aarch64-debian10
+        path: build/client/snapclient
