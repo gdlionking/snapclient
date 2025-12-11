@@ -1,62 +1,112 @@
-name: Build snapclient v0.34.0 for aarch64 Debian10
+name: Build snapclient v0.34.0 for aarch64 (Debian10)
 
 on:
   workflow_dispatch:
 
+env:
+  SNAP_TAG: refs/tags/v0.34.0
+  BOOST_VER: "1.74.0"
+  BOOST_DIR: ${{ runner.temp }}/boost_stage
+
 jobs:
   build:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
 
     steps:
-    - name: Checkout snapclient v0.34.0
-      uses: actions/checkout@v3
-      with:
-        ref: v0.34.0
+      - name: Checkout snapcast at tag
+        uses: actions/checkout@v3
+        with:
+          repository: badaix/snapcast      # 如果你用其它 fork，请改成 user/repo
+          ref: ${{ env.SNAP_TAG }}
+          fetch-depth: 1
 
-    - name: Install cross compile toolchain
-      run: |
-        sudo apt update
-        sudo apt install -y \
-          gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
-          cmake pkg-config git \
-          libpulse-dev libsamplerate0-dev libsoxr-dev
+      - name: Install native build deps and cross toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential ca-certificates curl git python3 python3-distutils \
+            cmake pkg-config nasm \
+            gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
+            libpulse-dev libasound2-dev libavahi-client-dev libexpat1-dev \
+            libsoxr-dev libsndfile1-dev \
+            autoconf automake libtool
 
-    - name: Download Boost 1.74 (prebuilt)
-      run: |
-        wget https://boostorg.jfrog.io/artifactory/main/release/1.74.0/source/boost_1_74_0.tar.bz2
-        tar xjf boost_1_74_0.tar.bz2
-        cd boost_1_74_0
-        ./bootstrap.sh --with-libraries=system,filesystem,thread,regex,program_options,date_time,chrono
-        ./b2 -j4 \
-            cxxflags="-fPIC -O2" linkflags="-static" \
-            variant=release link=static threading=multi runtime-link=static \
-            --prefix="$PWD/stage" install
-        echo "BOOST_ROOT=$PWD/stage" >> $GITHUB_ENV
+      - name: Download Boost source (minimal set)
+        run: |
+          cd $RUNNER_TEMP
+          wget "https://boostorg.jfrog.io/artifactory/main/release/${BOOST_VER}/source/boost_${BOOST_VER//./_}.tar.bz2" -O boost.tar.bz2
+          tar xjf boost.tar.bz2
+          cd boost_${BOOST_VER//./_}
+          # Bootstrap for cross-building small set of libs
+          ./bootstrap.sh --with-libraries=system,filesystem,thread,regex,program_options,date_time,chrono
 
-    - name: Configure snapclient (cross compile)
-      run: |
-        mkdir build
-        cd build
-        cmake .. \
-          -DCMAKE_SYSTEM_NAME=Linux \
-          -DCMAKE_SYSTEM_PROCESSOR=aarch64 \
-          -DCMAKE_C_COMPILER=aarch64-linux-gnu-gcc \
-          -DCMAKE_CXX_COMPILER=aarch64-linux-gnu-g++ \
-          -DBoost_NO_SYSTEM_PATHS=ON \
-          -DBoost_INCLUDE_DIR="$BOOST_ROOT/include" \
-          -DBoost_LIBRARY_DIR="$BOOST_ROOT/lib" \
-          -DBoost_USE_STATIC_LIBS=ON \
-          -DWITH_PULSE=ON \
-          -DWITH_ALSA=OFF \
-          -DWITH_AVAHI=OFF
+      - name: Build and stage Boost (cross-target aarch64, minimal libs)
+        run: |
+          cd $RUNNER_TEMP/boost_${BOOST_VER//./_}
+          # Build minimal set of boost for aarch64 using cross toolchain.
+          # We instruct b2 to use the aarch64 toolchain by overriding the compiler names.
+          # Limit -j to avoid OOM in CI.
+          ./b2 \
+            toolset=gcc \
+            cxx=aarch64-linux-gnu-g++ \
+            cxxflags="-fPIC -O2 -std=gnu++17" \
+            link=static \
+            variant=release \
+            threading=multi \
+            address-model=64 \
+            architecture=arm \
+            install --prefix="${BOOST_DIR}" -j2
 
-    - name: Build snapclient
-      run: |
-        cd build
-        make -j4
+          echo "BOOST_ROOT=${BOOST_DIR}" >> $GITHUB_ENV
+          echo "BOOST_INCLUDEDIR=${BOOST_DIR}/include" >> $GITHUB_ENV
+          echo "BOOST_LIBRARYDIR=${BOOST_DIR}/lib" >> $GITHUB_ENV
 
-    - name: Upload artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: snapclient-aarch64-debian10
-        path: build/client/snapclient
+      - name: Configure snapclient (cross compile)
+        run: |
+          mkdir -p build && cd build
+          cmake .. \
+            -DCMAKE_SYSTEM_NAME=Linux \
+            -DCMAKE_SYSTEM_PROCESSOR=aarch64 \
+            -DCMAKE_C_COMPILER=aarch64-linux-gnu-gcc \
+            -DCMAKE_CXX_COMPILER=aarch64-linux-gnu-g++ \
+            -DBoost_NO_SYSTEM_PATHS=ON \
+            -DBoost_USE_STATIC_LIBS=ON \
+            -DBoost_INCLUDE_DIR="${BOOST_INCLUDEDIR}" \
+            -DBoost_LIBRARY_DIR="${BOOST_LIBRARYDIR}" \
+            -DUSE_PULSE=ON \
+            -DUSE_ALSA=OFF \
+            -DUSE_AVAHI=OFF \
+            -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build snapclient
+        run: |
+          cd build
+          make -j2
+
+      - name: Show built binary (list)
+        run: |
+          ls -la build/client || true
+          file build/client/snapclient || true
+
+      - name: Upload artifact (GitHub)
+        uses: actions/upload-artifact@v3
+        with:
+          name: snapclient-aarch64-debian10
+          path: build/client/snapclient
+
+      - name: Optional: Upload to your HTTP server (POST multipart)
+        if: ${{ secrets.UPLOAD_URL != '' }}
+        env:
+          UPLOAD_URL: ${{ secrets.UPLOAD_URL }}
+          UPLOAD_TOKEN: ${{ secrets.UPLOAD_TOKEN }}   # optional auth token header
+        run: |
+          FILE=build/client/snapclient
+          if [ ! -f "$FILE" ]; then echo "File not found: $FILE"; exit 1; fi
+          echo "Uploading $FILE to $UPLOAD_URL ..."
+          # If you need token-based auth, set secret UPLOAD_TOKEN and use "Authorization: Bearer ..."
+          if [ -n "${UPLOAD_TOKEN}" ]; then
+            curl --fail -v -H "Authorization: Bearer ${UPLOAD_TOKEN}" -F "file=@${FILE}" "${UPLOAD_URL}"
+          else
+            curl --fail -v -F "file=@${FILE}" "${UPLOAD_URL}"
+          fi
